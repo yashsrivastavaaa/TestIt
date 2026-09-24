@@ -37,15 +37,23 @@ await sql`CREATE TABLE IF NOT EXISTS repository_knowledge (
   path text NOT NULL,
   commit_sha text NOT NULL,
   content text NOT NULL,
-  embedding vector(768) NOT NULL,
+  embedding vector(384) NOT NULL,
   updated_at timestamp DEFAULT now() NOT NULL
 )`;
 
-const embeddingColumn = await sql`SELECT data_type FROM information_schema.columns
-  WHERE table_schema = 'public' AND table_name = 'repository_knowledge' AND column_name = 'embedding'`;
-if (embeddingColumn[0]?.data_type === "jsonb") {
-  await sql`ALTER TABLE repository_knowledge ALTER COLUMN embedding TYPE vector(768)
-    USING embedding::text::vector(768)`;
+const embeddingColumn = await sql`SELECT format_type(attribute.atttypid, attribute.atttypmod) AS embedding_type
+  FROM pg_attribute AS attribute
+  JOIN pg_class AS relation ON relation.oid = attribute.attrelid
+  JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+  WHERE namespace.nspname = 'public' AND relation.relname = 'repository_knowledge'
+    AND attribute.attname = 'embedding' AND NOT attribute.attisdropped`;
+if (embeddingColumn[0]?.embedding_type !== "vector(384)") {
+  // Existing embeddings come from a different model/dimension and cannot be
+  // reused. Knowledge rows are a derived cache and will be rebuilt on analysis.
+  await sql`DROP INDEX IF EXISTS repository_knowledge_embedding_hnsw_idx`;
+  await sql`DELETE FROM repository_knowledge`;
+  await sql`ALTER TABLE repository_knowledge ALTER COLUMN embedding TYPE vector(384)
+    USING embedding::text::vector(384)`;
 }
 await sql`CREATE UNIQUE INDEX IF NOT EXISTS repository_knowledge_user_repo_path_unique
   ON repository_knowledge (clerk_user_id, repository_id, path)`;

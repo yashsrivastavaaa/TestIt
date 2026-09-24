@@ -47,11 +47,11 @@ The workspace runs approved browser steps in local Chromium by default. To see t
 ## RAG retrieval
 
 1. Split source files and saved tests into overlapping chunks.
-2. Embed chunks locally with FastEmbed's `BAAI/bge-base-en-v1.5` model (768 dimensions).
+2. Embed chunks locally with FastEmbed's `BAAI/bge-small-en-v1.5` model (384 dimensions), using one ONNX thread to reduce memory on small hosted instances.
 3. Store vectors in PostgreSQL with pgvector and index content for full-text search.
 4. Retrieve vector-similar and full-text matches, fuse rankings with reciprocal rank fusion, and pass relevant evidence and recent chat turns to Groq.
 
-FastEmbed downloads its embedding model the first time it is used and caches it for subsequent requests. Legacy zero vectors are regenerated when their repository is searched.
+FastEmbed downloads its embedding model the first time it is used and caches it for subsequent requests. Legacy zero vectors are regenerated when their repository is searched. The migration from 768-dimensional embeddings clears the derived knowledge index; reanalyze repositories after applying it to rebuild searchable chunks with the new model.
 
 ## AI safety guardrails
 

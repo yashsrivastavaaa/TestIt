@@ -6,8 +6,8 @@ from collections import defaultdict
 import asyncpg
 from fastembed import TextEmbedding
 
-EMBEDDING_DIMS = 768
-EMBEDDING_MODEL_NAME = "BAAI/bge-base-en-v1.5"
+EMBEDDING_DIMS = 384
+EMBEDDING_MODEL_NAME = "BAAI/bge-small-en-v1.5"
 CHUNK_CHARS = 4200
 CHUNK_OVERLAP = 500
 _embedding_model: TextEmbedding | None = None
@@ -19,7 +19,8 @@ def _model() -> TextEmbedding:
     if _embedding_model is None:
         with _embedding_lock:
             if _embedding_model is None:
-                _embedding_model = TextEmbedding(model_name=EMBEDDING_MODEL_NAME)
+                # Keep ONNX worker threads low for small hosted instances.
+                _embedding_model = TextEmbedding(model_name=EMBEDDING_MODEL_NAME, threads=1)
     return _embedding_model
 
 

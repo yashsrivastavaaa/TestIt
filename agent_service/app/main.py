@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -14,6 +15,8 @@ from app.guardrails import DEBUGGER_SYSTEM, REPOSITORY_CHAT_SYSTEM
 from app.models import AnalyzeRequest, AnalyzeResponse, AskRequest, RunRequest, WorkspaceChatRequest
 from app.rag.pipeline import index_repository, retrieve_repository, retrieve_workspace_knowledge
 from app.security import redact_repository_content, require_service_token
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -55,10 +58,13 @@ async def analyze(request: AnalyzeRequest, req: Request):
     safe_files = [file.model_copy(update={"content": redact_repository_content(file.content)}) for file in request.files]
     source = "\n\n".join(f"FILE {file.path}\n{file.content}" for file in safe_files)[:source_limit]
     safe_change_summary = redact_repository_content(request.change_summary)
+    stage = "planning"
     try:
         safe_feature_prompt = redact_repository_content(request.feature_prompt)
         planned = await plan_tests(api_key, request.repository_name, request.repository_branch, request.commit_sha, safe_change_summary, request.changed_files, source, request.application_url, safe_feature_prompt, request.test_case_count)
         serialized_cases = [case.model_dump(mode="json", by_alias=True) for case in planned]
+        logger.info("Planner completed repository analysis: repository_id=%s cases=%s", request.repository_id, len(serialized_cases))
+        stage = "RAG indexing"
         indexed = await index_repository(
             pool,
             request.clerk_user_id,
@@ -72,6 +78,7 @@ async def analyze(request: AnalyzeRequest, req: Request):
     except HTTPException:
         raise
     except Exception as error:
+        logger.exception("Repository analysis failed during %s: repository_id=%s", stage, request.repository_id)
         raise HTTPException(status_code=502, detail=f"Planner/RAG pipeline failed: {str(error)[:350]}") from error
 
 @app.post("/v1/repositories/{repository_id}/ask", dependencies=[Depends(require_service_token)])

@@ -26,7 +26,7 @@ Next.js web app
     - Repository and workspace chat (RAG + Groq)
 ```
 
-The web app handles user authentication and ownership checks. It calls the Python service with a shared `AGENT_SERVICE_TOKEN`. The Python service uses Groq for planning and chat, FastEmbed with `BAAI/bge-base-en-v1.5` for 768-dimensional embeddings, and Playwright for browser execution. The first embedding run downloads the model and caches it locally.
+The web app handles user authentication and ownership checks. It calls the Python service with a shared `AGENT_SERVICE_TOKEN`. The Python service uses Groq for planning and chat, FastEmbed with the smaller `BAAI/bge-small-en-v1.5` model for 384-dimensional embeddings, and Playwright for browser execution. The first embedding run downloads the model and caches it locally.
 
 ## Agent architecture
 
@@ -69,7 +69,7 @@ All `/v1` routes require the shared service token. The service also checks user/
 - `github_connections` stores the linked GitHub identity and encrypted access token per Clerk user.
 - `github_repositories` stores repositories added to a user's workspace and the last analyzed commit SHA.
 - `repository_test_cases` stores editable test metadata, JSON steps, run status, and the latest run report.
-- `repository_knowledge` stores indexed source/test chunks, commit SHA, and `vector(768)` embeddings. Its unique path index scopes a chunk path to one user and repository.
+- `repository_knowledge` stores indexed source/test chunks, commit SHA, and `vector(384)` embeddings. Its unique path index scopes a chunk path to one user and repository.
 
 ### Planner agent
 
@@ -99,11 +99,11 @@ All `/v1` routes require the shared service token. The service also checks user/
 
 ### Indexing
 
-Each successful repository analysis indexes the supplied source files and the generated test cases. Index records are scoped by Clerk user ID and repository ID and store the analyzed commit, source path, chunk text, and 768-dimensional vector.
+Each successful repository analysis indexes the supplied source files and the generated test cases. Index records are scoped by Clerk user ID and repository ID and store the analyzed commit, source path, chunk text, and 384-dimensional vector.
 
 1. **Chunking:** Files are split on line boundaries into chunks of about 4,200 characters with about 500 characters of overlap. A single oversized line is split into overlapping character windows. Chunk metadata retains source line ranges.
-2. **Embedding:** FastEmbed loads `BAAI/bge-base-en-v1.5` once per service process. Long chunks are embedded as 1,400-character windows and their vectors are averaged. Queries use the model's search-oriented query prefix.
-3. **Storage:** PostgreSQL stores vectors as `vector(768)`. The migration creates an HNSW cosine index, a GIN full-text index over path and content, and a user/repository scope index. Re-indexing replaces that repository's knowledge rows in one transaction.
+2. **Embedding:** FastEmbed loads the smaller `BAAI/bge-small-en-v1.5` model once per service process with one ONNX thread to reduce memory use on small hosts. Long chunks are embedded as 1,400-character windows and their vectors are averaged. Queries use the model's search-oriented query prefix.
+3. **Storage:** PostgreSQL stores vectors as `vector(384)`. The migration creates an HNSW cosine index, a GIN full-text index over path and content, and a user/repository scope index. Re-indexing replaces that repository's knowledge rows in one transaction.
 
 ### Retrieval and answer generation
 

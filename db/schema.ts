@@ -1,8 +1,8 @@
 import { boolean, customType, integer, jsonb, pgTable, serial, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
-const vector768 = customType<{ data: number[]; driverData: string }>({
-  dataType: () => "vector(768)",
+const vector384 = customType<{ data: number[]; driverData: string }>({
+  dataType: () => "vector(384)",
   toDriver: (value) => `[${value.join(",")}]`,
   fromDriver: (value) => value.slice(1, -1).split(",").map(Number),
 });
@@ -45,7 +45,7 @@ export const repositoryTestCases = pgTable("repository_test_cases", {
 });
 
 export const repositoryKnowledge = pgTable("repository_knowledge", {
-  id: serial("id").primaryKey(), clerkUserId: text("clerk_user_id").notNull(), repositoryId: integer("repository_id").notNull(), path: text("path").notNull(), commitSha: text("commit_sha").notNull(), content: text("content").notNull(), embedding: vector768("embedding").notNull(), updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  id: serial("id").primaryKey(), clerkUserId: text("clerk_user_id").notNull(), repositoryId: integer("repository_id").notNull(), path: text("path").notNull(), commitSha: text("commit_sha").notNull(), content: text("content").notNull(), embedding: vector384("embedding").notNull(), updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({ documentUnique: uniqueIndex("repository_knowledge_user_repo_path_unique").on(table.clerkUserId, table.repositoryId, table.path) }));
 
 export type User = typeof users.$inferSelect;
