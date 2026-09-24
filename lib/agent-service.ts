@@ -33,7 +33,7 @@ export async function callAgentService<T>(path: string, payload: unknown, timeou
         ? data.error
         : plainText
           ? `Python agent service returned ${response.status}: ${plainText.slice(0, 300)}`
-          : `Python agent service returned ${response.status}.`;
+          : `Python agent service returned ${response.status} with an empty response. Check the Render service logs at the same timestamp; the service may have restarted or failed before returning an API error.`;
     throw new Error(reason);
   }
   return data as T;
