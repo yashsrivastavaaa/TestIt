@@ -23,26 +23,34 @@ class PlannedTest(BaseModel):
     expected_result: str = Field(default="", alias="expectedResult", max_length=1200)
     steps: list[TestStep] = Field(min_length=1, max_length=30)
 
-class AnalyzeRequest(BaseModel):
+class RepositorySourceRequest(BaseModel):
     clerk_user_id: str = Field(min_length=1, max_length=200)
     repository_id: int = Field(gt=0)
     repository_name: str = Field(min_length=1, max_length=300)
     repository_branch: str = Field(default="unknown", min_length=1, max_length=300)
-    application_url: str = Field(min_length=8, max_length=2000)
-    feature_prompt: str = Field(default="", max_length=4000)
-    test_case_count: int = Field(default=5, ge=1, le=10)
     commit_sha: str = Field(min_length=1, max_length=100)
     change_summary: str = Field(max_length=12000)
     changed_files: list[str] = Field(default_factory=list, max_length=50)
     files: list[RepositoryFile] = Field(min_length=1, max_length=36)
 
+class AnalyzeRequest(RepositorySourceRequest):
+    pass
+
+class GenerateTestsRequest(RepositorySourceRequest):
+    application_url: str = Field(min_length=8, max_length=2000)
+    feature_prompt: str = Field(default="", max_length=4000)
+    test_case_count: int = Field(default=5, ge=1, le=10)
+
 class AnalyzeResponse(BaseModel):
-    test_cases: list[PlannedTest]
     indexed_chunks: int
+
+class GenerateTestsResponse(BaseModel):
+    test_cases: list[PlannedTest]
 
 class RunRequest(BaseModel):
     clerk_user_id: str = Field(min_length=1, max_length=200)
     repository_id: int = Field(gt=0)
+    application_url: str = Field(min_length=8, max_length=2000)
     use_browserbase: bool = False
     show_browser: bool = True
     test_case: PlannedTest

@@ -11,7 +11,10 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Enter a question under 2,000 characters." }, { status: 400 });
     }
     const history = Array.isArray(body.history)
-      ? body.history.filter((turn) => (turn.role === "user" || turn.role === "assistant") && typeof turn.content === "string").slice(-8)
+      ? body.history
+          .filter((turn) => (turn.role === "user" || turn.role === "assistant") && typeof turn.content === "string")
+          .slice(-8)
+          .map((turn) => ({ role: turn.role, content: turn.content.slice(0, 2000) }))
       : [];
     const result = await callAgentService<{ answer: string; sources: string[] }>("/v1/chat", {
       clerk_user_id: userId,

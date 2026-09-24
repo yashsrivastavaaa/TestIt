@@ -61,8 +61,11 @@ def _known_routes(files: set[str], source: str) -> set[str]:
                 routes.add("/api/" + "/".join(segments[1:]))
             else:
                 routes.add("/" + "/".join(segments) if segments else "/")
-    # Literal hrefs and route strings in source also provide direct evidence.
-    routes.update(re.findall(r"(?:href|push|replace|targetRoute)\s*[:=(]\s*[`'\"](/[^'\"`?#]*)", source))
+    # Literal hrefs and route strings in source also provide direct evidence,
+    # but static asset links are not application pages.
+    literal_routes = re.findall(r"(?:href|push|replace|targetRoute)\s*[:=(]\s*[`'\"](/[^'\"`?#]*)", source)
+    static_asset = re.compile(r"\.(?:avif|bmp|css|csv|gif|ico|jpe?g|js|json|map|mp4|pdf|png|svg|txt|webp|woff2?)(?:$|/)", re.IGNORECASE)
+    routes.update(route for route in literal_routes if not static_asset.search(route))
     return routes
 
 
@@ -95,7 +98,14 @@ def _metadata_issues(cases: list[PlannedTest], source: str, changed_files: set[s
         if not case.target_route.startswith("/") or "://" in case.target_route:
             issues.append(f"{case.title}: targetRoute must be an app path beginning with /")
         elif not _route_is_known(case.target_route, known_routes):
-            issues.append(f"{case.title}: targetRoute must map to a route file or literal route present in Repository File Context; known routes: {sorted(known_routes)[:30]}")
+            # Page filenames and literal links can differ only by casing. Use
+            # the exact source-backed spelling so Next.js receives the route
+            # that the repository actually defines.
+            canonical_route = next((route for route in known_routes if route.casefold() == case.target_route.casefold()), None)
+            if canonical_route:
+                case.target_route = canonical_route
+            else:
+                issues.append(f"{case.title}: targetRoute must map to a route file or literal route present in Repository File Context; known routes: {sorted(known_routes)[:30]}")
         if not case.expected_result.strip():
             issues.append(f"{case.title}: expectedResult is missing")
         if len(case.steps) > 10:
@@ -111,14 +121,21 @@ def _metadata_issues(cases: list[PlannedTest], source: str, changed_files: set[s
     return issues
 
 
-def _normalize_navigation(cases: list[PlannedTest], application_url: str) -> None:
+def _normalize_navigation(cases: list[PlannedTest], application_url: str | None) -> None:
     for case in cases:
         for step in case.steps:
             if step.action == "navigate" and (not step.value or "replace-with-your-app-url" in step.value):
-                step.value = application_url
+                step.value = application_url or case.target_route
 
 
-def _navigation_issues(cases: list[PlannedTest], application_url: str) -> list[str]:
+def _navigation_issues(cases: list[PlannedTest], application_url: str | None) -> list[str]:
+    if not application_url:
+        issues = []
+        for case in cases:
+            for step in case.steps:
+                if step.action == "navigate" and (not step.value or not step.value.startswith("/") or step.value.startswith("//")):
+                    issues.append(f"{case.title}: without a website URL, navigation must use a site-relative path")
+        return issues
     try:
         base = urlparse(application_url)
         base_origin = (base.scheme, base.hostname, base.port)
@@ -140,7 +157,7 @@ def _navigation_issues(cases: list[PlannedTest], application_url: str) -> list[s
     return issues
 
 
-async def plan_tests(api_key: str, repository: str, branch: str, commit: str, changes: str, changed_files: list[str], source: str, application_url: str, feature_prompt: str, test_case_count: int) -> list[PlannedTest]:
+async def plan_tests(api_key: str, repository: str, branch: str, commit: str, changes: str, changed_files: list[str], source: str, application_url: str | None, feature_prompt: str, test_case_count: int) -> list[PlannedTest]:
     owner, _, repo_name = repository.partition("/")
     repo_name = repo_name or repository
     def build_prompt(source_excerpt: str) -> str:
@@ -159,7 +176,7 @@ Keep each case to at most 10 browser steps. For responsive/mobile behavior, infe
 
 Ground every test description in code: mention the relevant source path(s) and briefly state the behavior those files establish. If the requested feature is not evidenced by the repository source, say so in the description and create tests for the closest evidenced behavior instead of inventing implementation details. If this is a no-change analysis, do not describe tests as covering newly changed behavior.
 
-Return only valid JSON exactly as {{"test_cases":[{{"title":"...","description":"one concise line","type":"ui|auth|api|form|integration|edge-case","priority":"low|medium|high","targetRoute":"/route","targetFiles":["path/from/context"],"expectedResult":"observable passing outcome","steps":[{{"action":"setViewport|navigate|click|fill|assertText|wait","selector":"CSS selector when required","value":"URL/text/input/wait duration or WIDTHxHEIGHT viewport"}}]}}]}}. Return fewer than {test_case_count} cases, or an empty array, when the repository evidence does not support more. Use this exact website URL as the base for navigation steps: {application_url}. Never output placeholder URLs, Markdown, or code to execute.
+Return only valid JSON exactly as {{"test_cases":[{{"title":"...","description":"one concise line","type":"ui|auth|api|form|integration|edge-case","priority":"low|medium|high","targetRoute":"/route","targetFiles":["path/from/context"],"expectedResult":"observable passing outcome","steps":[{{"action":"setViewport|navigate|click|fill|assertText|wait","selector":"CSS selector when required","value":"URL/text/input/wait duration or WIDTHxHEIGHT viewport"}}]}}]}}. Return fewer than {test_case_count} cases, or an empty array, when the repository evidence does not support more. {f'Use this exact website URL as the base for navigation steps: {application_url}.' if application_url else 'No website URL was provided. Use only site-relative paths such as /dashboard in navigate steps; do not invent a hostname or absolute URL.'} Never output placeholder URLs, Markdown, or code to execute.
 
 Repository: {repository}
 Commit: {commit}
@@ -211,12 +228,15 @@ Repository source excerpts:
             )
 
     response = None
+    # Leave enough room for the full JSON metadata and steps, while keeping
+    # output smaller than the previous 650-token-per-case allowance.
+    output_token_budget = min(3500, max(1500, test_case_count * 500))
     budgets = list(dict.fromkeys((min(len(source), 12_000), min(len(source), 6_000), min(len(source), 2_500))))
     for source_budget in budgets:
         try:
             response = await generate_plan(
                 build_prompt(source[:source_budget]),
-                min(4096, max(1400, test_case_count * 650)),
+                output_token_budget,
             )
             break
         except httpx.HTTPStatusError as error:
@@ -228,9 +248,11 @@ Repository source excerpts:
         raise ValueError("Planner could not create a request from the repository source.")
     def parse_cases(text: str) -> list[PlannedTest]:
         raw = None
+        json_error = None
         try:
             raw = json.loads(text or "")
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as error:
+            json_error = error
             decoder = json.JSONDecoder()
             for offset, char in enumerate(text or ""):
                 if char != "{":
@@ -244,15 +266,35 @@ Repository source excerpts:
                     continue
         try:
             if not isinstance(raw, dict):
+                if json_error:
+                    raise TypeError(f"Invalid JSON near character {json_error.pos}: {json_error.msg}")
                 raise TypeError("Expected a JSON object")
             candidates = raw.get("test_cases", raw.get("testCases", []))
             if not isinstance(candidates, list):
                 raise TypeError("test_cases must be an array")
             return [PlannedTest.model_validate(item) for item in candidates[:test_case_count]]
         except (TypeError, ValidationError) as error:
-            raise ValueError("Planner Agent returned an invalid test plan. Try analysis again.") from error
+            detail = " ".join(str(error).split())[:300]
+            raise ValueError(f"Planner Agent returned an invalid test plan: {detail}") from error
 
-    cases = parse_cases(response.text or "")
+    try:
+        cases = parse_cases(response.text or "")
+    except ValueError as first_parse_error:
+        repair_prompt = build_prompt(source[:source_budget]) + (
+            "\n\nThe previous response did not match the required test plan JSON schema. "
+            "Regenerate the plan from the repository evidence. Return one complete JSON object, "
+            "with every required test case field and at least one valid step per case. "
+            "Do not use Markdown fences or commentary. Local validation error: "
+            f"{str(first_parse_error)[:300]}"
+        )
+        repaired_response = await generate_plan(repair_prompt, output_token_budget)
+        try:
+            cases = parse_cases(repaired_response.text or "")
+        except ValueError as repair_error:
+            raise ValueError(
+                "Planner Agent returned invalid JSON or test case fields after one repair attempt. "
+                f"Initial error: {str(first_parse_error)[:180]}; repair error: {str(repair_error)[:180]}"
+            ) from repair_error
     if not cases:
         # An empty result can be a conservative model miss when source excerpts
         # are noisy. Ask once with a narrower objective; the retry still has to
@@ -267,7 +309,7 @@ Repository source excerpts:
         try:
             focused_response = await generate_plan(
                 focused_prompt,
-                min(4096, max(1400, test_case_count * 650)),
+                output_token_budget,
             )
         except httpx.HTTPStatusError as error:
             if error.response.status_code == 413:
@@ -291,7 +333,7 @@ Repository source excerpts:
         try:
             corrected = await generate_plan(
                 build_prompt(source[:source_budget]) + correction,
-                min(4096, max(1400, test_case_count * 650)),
+                output_token_budget,
             )
         except httpx.HTTPStatusError as error:
             if error.response.status_code == 413:

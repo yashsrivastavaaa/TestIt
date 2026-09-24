@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import asyncpg
@@ -27,6 +28,11 @@ async def create_pool() -> asyncpg.Pool:
 
 
 def get_service_key(provider: str) -> str:
+    if provider == "groq":
+        # generate_text selects the next pooled key for each actual request.
+        keys = [value.strip() for value in re.split(r"[,;\s]+", os.environ.get("GROQ_API_KEYS", "")) if value.strip()]
+        if keys:
+            return keys[0]
     env_name = {"groq": "GROQ_API_KEY", "browserbase": "BROWSERBASE_API_KEY"}.get(provider)
     if env_name and os.environ.get(env_name):
         return os.environ[env_name]

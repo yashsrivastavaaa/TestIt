@@ -28,7 +28,8 @@ Set these values in `agent_service/.env`:
 
 - `DATABASE_URL`: PostgreSQL connection string used by the web app.
 - `AGENT_SERVICE_TOKEN`: same long random secret as the root `.env`.
-- `GROQ_API_KEY`: Groq API key.
+- `GROQ_API_KEYS`: optional comma- or newline-separated Groq key pool, rotated once per model request.
+- `GROQ_API_KEY`: single-key fallback when `GROQ_API_KEYS` is empty.
 - `GROQ_MODEL`: optional model override; defaults to `openai/gpt-oss-120b`.
 - `GROQ_MAX_TOKENS`: optional model output limit.
 - `PLANNER_SOURCE_CHAR_LIMIT`: optional planner source budget, capped at 12,000 characters.
@@ -39,14 +40,14 @@ The workspace runs approved browser steps in local Chromium by default. To see t
 
 ## Agents
 
-- **Planner:** Groq reviews changed source and drafts up to the requested 1-10 editable, repository-grounded test cases. It may return fewer when the source does not support more.
+- **Planner:** After a website URL is provided, Groq reviews current and changed source and drafts up to the requested 1-10 editable, repository-grounded test cases. Test generation is separate from repository analysis and may return fewer cases when evidence is limited.
 - **Browser execution:** Playwright runs the approved step list in local Chromium, visibly by default.
 - **Debug and self-healing:** Groq explains failures from captured evidence and suggests repairs for a person to review.
 - **Repository chat:** Retrieves matching source and saved tests, includes recent conversation turns, and uses Groq to answer with file citations. Workspace chat can search across analyzed repositories.
 
 ## RAG retrieval
 
-1. Split source files and saved tests into overlapping chunks.
+1. The separate **Analyze repository** action splits source files into overlapping chunks and indexes them. It does not require a website URL or generate cases.
 2. Embed chunks locally with FastEmbed's `BAAI/bge-small-en-v1.5` model (384 dimensions), using one ONNX thread to reduce memory on small hosted instances.
 3. Store vectors in PostgreSQL with pgvector and index content for full-text search.
 4. Retrieve vector-similar and full-text matches, fuse rankings with reciprocal rank fusion, and pass relevant evidence and recent chat turns to Groq.

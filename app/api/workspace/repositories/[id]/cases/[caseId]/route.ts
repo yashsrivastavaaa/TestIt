@@ -30,7 +30,13 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const { userId } = await auth(); if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const { id, caseId } = await context.params; const repoId = Number(id); const rowId = Number(caseId);
   try {
-    const body = await request.json().catch(() => ({})) as { useBrowserbase?: unknown; showBrowser?: unknown };
+    const body = await request.json().catch(() => ({})) as { applicationUrl?: unknown; useBrowserbase?: unknown; showBrowser?: unknown };
+    if (typeof body.applicationUrl !== "string") return NextResponse.json({ error: "Enter the website URL before running this test." }, { status: 400 });
+    let applicationUrl: URL;
+    try { applicationUrl = new URL(body.applicationUrl); } catch { return NextResponse.json({ error: "Enter a valid website URL, such as https://example.com." }, { status: 400 }); }
+    if (!["http:", "https:"].includes(applicationUrl.protocol) || !applicationUrl.hostname || applicationUrl.username || applicationUrl.password) {
+      return NextResponse.json({ error: "Use a valid http or https website URL without embedded credentials." }, { status: 400 });
+    }
     const useBrowserbase = body.useBrowserbase === true;
     const showBrowser = !useBrowserbase && body.showBrowser !== false;
     const [testCase] = await db.select().from(repositoryTestCases).where(scopedCase(userId, repoId, rowId)).limit(1); const [repo] = await db.select().from(githubRepositories).where(and(eq(githubRepositories.id, repoId), eq(githubRepositories.clerkUserId, userId))).limit(1);
@@ -38,6 +44,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const response = await callAgentService<{ result: { passed: boolean; details: string; ranAt: string; engine?: string; sessionId?: string; liveViewUrl?: string; failedStep?: number; currentUrl?: string; stepResults?: Array<{ index: number; action: string; selector?: string; value?: string; status: string; error?: string }>; diagnosis?: string; confidence?: string; suggestedSteps?: Array<{ action: string; selector?: string; value?: string }> | null } }>(`/v1/repositories/${repoId}/cases/${rowId}/run`, {
       clerk_user_id: userId,
       repository_id: repoId,
+      application_url: applicationUrl.toString(),
       use_browserbase: useBrowserbase,
       show_browser: showBrowser,
       test_case: { title: testCase.title, description: testCase.description, type: testCase.type, priority: testCase.priority, targetRoute: testCase.targetRoute, targetFiles: testCase.targetFiles, expectedResult: testCase.expectedResult, steps: testCase.steps },

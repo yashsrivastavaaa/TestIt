@@ -5,7 +5,7 @@ TestIt helps teams create and run browser tests grounded in their GitHub reposit
 ## What TestIt does
 
 - **GitHub workspace:** Sign in, connect GitHub, browse repositories available to your account, and add repositories to your workspace.
-- **Code-grounded test planning:** Analyze repository changes since the last analysis, or the current source on an initial analysis. Add a feature prompt and choose from 1 to 10 cases. The planner can return fewer cases when the source does not support more.
+- **Separate source analysis and test generation:** Analyze repository changes or current source and index it for chat without a website URL. To generate test cases or run browser tests, provide the target website URL. Test generation supports a feature prompt and a maximum of 1 to 10 grounded cases.
 - **Review before running:** Edit each test's metadata and ordered steps before execution.
 - **Visible browser runs:** Run one case or run all cases sequentially in local Chromium. Results show the failing step, URL, captured page controls, and diagnostic suggestions.
 - **Human-reviewed repairs:** The debugging agent can suggest step changes based on captured browser evidence. Suggestions are not applied or run automatically.
@@ -35,12 +35,12 @@ The agents are focused service components coordinated by FastAPI. They do not ru
 ```mermaid
 flowchart LR
     U[Signed-in user] --> W[Next.js workspace]
-    W -->|Clerk user, repository, URL, prompt, count| A[FastAPI agent service]
+    W -->|source analysis request, no URL| A[FastAPI agent service]
     A -->|verify shared service token and repository ownership| DB[(PostgreSQL)]
-    A -->|fetch diff and source| GH[GitHub API]
+    W -->|URL, source, feature prompt, count| A
     A -->|sanitized source and change summary| P[Planner agent - Groq]
-    P -->|validated JSON test cases| A
-    A -->|index source and cases| R[RAG indexing]
+    P -->|validated test cases| W
+    A -->|index source files only| R[RAG indexing]
     R --> DB
     W -->|run approved steps| A
     A --> B[Browser execution - Playwright]
@@ -57,7 +57,8 @@ flowchart LR
 | Endpoint | Responsibility |
 | --- | --- |
 | `GET /health` | Liveness check for the Python service. |
-| `POST /v1/repositories/analyze` | Validate repository ownership, plan cases, and index source plus generated cases. |
+| `POST /v1/repositories/analyze` | Validate repository ownership and index source files for RAG; no website URL or test cases are required. |
+| `POST /v1/repositories/generate-tests` | Validate repository ownership and generate grounded cases from current source; requires the website URL. |
 | `POST /v1/repositories/{repository_id}/cases/{case_id}/run` | Validate case ownership, execute approved steps, and diagnose eligible failures. |
 | `POST /v1/repositories/{repository_id}/ask` | Retrieve repository passages and answer with source citations. |
 | `POST /v1/chat` | Retrieve across the signed-in user's analyzed repositories and answer workspace questions. |
@@ -69,16 +70,16 @@ All `/v1` routes require the shared service token. The service also checks user/
 - `github_connections` stores the linked GitHub identity and encrypted access token per Clerk user.
 - `github_repositories` stores repositories added to a user's workspace and the last analyzed commit SHA.
 - `repository_test_cases` stores editable test metadata, JSON steps, run status, and the latest run report.
-- `repository_knowledge` stores indexed source/test chunks, commit SHA, and `vector(384)` embeddings. Its unique path index scopes a chunk path to one user and repository.
+- `repository_knowledge` stores indexed source chunks, commit SHA, and `vector(384)` embeddings. Its unique path index scopes a chunk path to one user and repository.
 
 ### Planner agent
 
-1. The authenticated Next.js API verifies repository ownership, reads the repository's default branch, and compares it with the last analyzed commit when one is recorded.
-2. It selects relevant, supported text and source files from the GitHub tree. Changed files and files matching the feature prompt are prioritized; root entry pages and public pages receive priority when there is no feature-specific prompt. Individual files are limited to 45 KB, at most 36 files are sent, and the agent source context is capped at 12,000 characters.
-3. Common credentials are redacted. The Python planner sends the change summary, requested feature, repository metadata, and source excerpts to Groq with separate system instructions that treat repository text as untrusted evidence.
+1. **Source analysis** verifies repository ownership, reads the default branch, selects supported source files, and indexes them for RAG. It does not require a website URL or call the planner.
+2. **Test generation** is a separate action. The authenticated Next.js API reads the branch and compares it with the last analyzed commit when one is recorded. Changed files and files matching the feature prompt are prioritized; root entry pages and public pages receive priority when there is no feature-specific prompt. Individual files are limited to 45 KB, at most 36 files are sent, and the agent source context is capped at 12,000 characters.
+3. Test generation requires the website URL. Common credentials are redacted. The Python planner sends the change summary, requested feature, URL, repository metadata, and source excerpts to Groq with separate system instructions that treat repository text as untrusted evidence.
 4. The planner requests JSON for up to the user's requested 1-10 cases. Each case has a title, one-line description, type, priority, target route, source paths, expected result, and ordered browser steps. Supported step actions are `setViewport`, `navigate`, `click`, `fill`, `assertText`, and `wait`.
 5. Pydantic validates the response shape. Additional checks require known source files and routes, source-backed selectors and asserted text, relevant changed files when a diff exists, same-origin navigation, safe interactions, and at most 10 generated steps. Invalid output gets one correction attempt; an empty plan gets one focused retry. The planner returns fewer cases instead of inventing unsupported behavior.
-6. After a non-empty plan is accepted, the API saves editable cases, records the analyzed commit, and indexes the source and generated cases for RAG.
+6. After a non-empty plan is accepted, the API saves the editable cases. Source indexing and commit tracking are performed only by the separate Analyze repository action.
 
 ### Browser execution agent
 
@@ -99,7 +100,7 @@ All `/v1` routes require the shared service token. The service also checks user/
 
 ### Indexing
 
-Each successful repository analysis indexes the supplied source files and the generated test cases. Index records are scoped by Clerk user ID and repository ID and store the analyzed commit, source path, chunk text, and 384-dimensional vector.
+Each successful repository source analysis indexes the supplied source files. Index records are scoped by Clerk user ID and repository ID and store the analyzed commit, source path, chunk text, and 384-dimensional vector. Test generation is separate and does not require or perform RAG indexing.
 
 1. **Chunking:** Files are split on line boundaries into chunks of about 4,200 characters with about 500 characters of overlap. A single oversized line is split into overlapping character windows. Chunk metadata retains source line ranges.
 2. **Embedding:** FastEmbed loads the smaller `BAAI/bge-small-en-v1.5` model once per service process with one ONNX thread to reduce memory use on small hosts. Long chunks are embedded as 1,400-character windows and their vectors are averaged. Queries use the model's search-oriented query prefix.
@@ -187,7 +188,8 @@ Fill in `agent_service/.env`:
 | --- | --- |
 | `DATABASE_URL` | Same PostgreSQL database used by the web app |
 | `AGENT_SERVICE_TOKEN` | Must match the root `.env` value |
-| `GROQ_API_KEY` | Groq API key for planner, debugger, and chat |
+| `GROQ_API_KEYS` | Optional comma- or newline-separated Groq key pool. Keys rotate per model request and take precedence over `GROQ_API_KEY`. |
+| `GROQ_API_KEY` | Single Groq API key fallback for planner, debugger, and chat |
 | `GROQ_MODEL` | Optional model override; default is `openai/gpt-oss-120b` |
 | `GROQ_MAX_TOKENS` | Optional output-token limit |
 | `PLANNER_SOURCE_CHAR_LIMIT` | Optional planner source limit; capped at 12,000 characters |
@@ -199,6 +201,8 @@ uvicorn app.main:app --env-file .env --host 127.0.0.1 --port 8001 --reload
 ```
 
 The service health endpoint is `http://127.0.0.1:8001/health`.
+
+For a hosted agent service, configure `GROQ_API_KEYS` (or the single-key `GROQ_API_KEY`) in that service's environment settings. Do not commit API keys to the repository. Key rotation is per request; keys from the same Groq organization may still share rate limits.
 
 ### 4. Start Next.js
 
@@ -215,11 +219,11 @@ Open `http://localhost:3000`, sign in, connect GitHub, and add a repository to y
 1. Add a GitHub repository from the workspace.
 2. Open the repository's **Tests & Q&A** page.
 3. Enter the website URL to test, describe the feature to focus on, and choose the maximum number of cases.
-4. Analyze the repository. TestIt reads changed source when available and grounds cases in the supplied code.
-5. Review and edit the proposed cases and steps.
-6. Run a case or choose **Run all cases**. Keep the Python agent running in a desktop session to see Chromium open visibly.
-7. Review run evidence, then accept or edit any suggested repair yourself.
-8. Ask repository chat questions about source code, changes, tests, or prior chat context.
+4. Optionally choose **Analyze repository** to index source for repository chat. This step does not need the website URL and does not generate cases.
+5. Enter the website URL, describe the feature, and choose the maximum number of cases, then choose **Generate test cases**.
+6. Review and edit the proposed cases and steps.
+7. Run a case or choose **Run all cases**. Keep the Python agent running in a desktop session to see Chromium open visibly.
+8. Review run evidence, then accept or edit any suggested repair yourself. Ask repository chat questions about source code, changes, tests, or prior chat context.
 
 ## AI safety
 
