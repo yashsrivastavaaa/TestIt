@@ -17,9 +17,23 @@ export async function callAgentService<T>(path: string, payload: unknown, timeou
     if (error instanceof Error && error.name === "TimeoutError") throw new Error("The Python agent service timed out. Try again or check its logs.");
     throw new Error("Could not reach the Python agent service. Confirm it is running and AGENT_SERVICE_URL is correct.");
   }
-  const data = await response.json().catch(() => ({})) as { detail?: unknown; error?: unknown };
+  const responseBody = await response.text();
+  let data: { detail?: unknown; error?: unknown } = {};
+  try {
+    data = JSON.parse(responseBody) as { detail?: unknown; error?: unknown };
+  } catch {
+    // Render/proxy failures can return an HTML or plain-text body instead of
+    // FastAPI's JSON error shape. Preserve a short, readable hint for the UI.
+  }
   if (!response.ok) {
-    const reason = typeof data.detail === "string" ? data.detail : typeof data.error === "string" ? data.error : `Python agent service returned ${response.status}.`;
+    const plainText = responseBody.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+    const reason = typeof data.detail === "string"
+      ? data.detail
+      : typeof data.error === "string"
+        ? data.error
+        : plainText
+          ? `Python agent service returned ${response.status}: ${plainText.slice(0, 300)}`
+          : `Python agent service returned ${response.status}.`;
     throw new Error(reason);
   }
   return data as T;
